@@ -1,6 +1,8 @@
 // models/User.js
 const mongoose = require("mongoose");
 
+
+
 const userSchema = new mongoose.Schema(
   {
     username: {
@@ -11,6 +13,8 @@ const userSchema = new mongoose.Schema(
       minlength: 3,
       maxlength: 20,
     },
+ role: { type: String, enum: ["user", "admin"], default: "user" },
+
     email: {
       type: String,
       required: true,

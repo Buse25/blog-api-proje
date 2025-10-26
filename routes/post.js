@@ -1,274 +1,232 @@
+// routes/post.js
 const express = require("express");
 const router = express.Router();
-const auth = require("../middleware/authMiddleware");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const mongoose = require("mongoose");
+
+/* MODELLER */
 const Post = require("../models/Post");
 const Comment = require("../models/Comment");
+const Category = require("../models/Category");
+const Tag = require("../models/Tag");
 
-/* ===================== POSTS ===================== */
+/* MIDDLEWARE */
+const auth = require("../middleware/authMiddleware");
 
-/**
- * POST /posts  -> Yeni post oluştur (auth gerekli)
- * Body: { title, content, tags? }
- */
-router.post("/", auth, async (req, res) => {
+/* =============== HELPERS =============== */
+function toArray(v) {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.filter(Boolean);
+  if (typeof v === "string" && v.includes(",")) return v.split(",").map(s => s.trim()).filter(Boolean);
+  return [v].filter(Boolean);
+}
+
+async function resolveIds(Model, incoming) {
+  const arr = toArray(incoming);
+  const ids = [];
+  const names = [];
+  arr.forEach(x => {
+    if (mongoose.Types.ObjectId.isValid(String(x))) ids.push(String(x));
+    else if (typeof x === "string") names.push(x.trim());
+  });
+  let found = [];
+  if (names.length) {
+    found = await Model.find({
+      $or: [{ name: { $in: names } }, { slug: { $in: names.map(n => n.toLowerCase()) } }],
+    }).select("_id name slug");
+    const foundNames = new Set(found.map(f => f.name).concat(found.map(f => f.slug)));
+    const missing = names.filter(n => !foundNames.has(n) && !foundNames.has(n.toLowerCase()));
+    if (missing.length) {
+      const created = await Model.insertMany(
+        missing.map(n => ({ name: n, slug: n.toLowerCase().replace(/\s+/g, "-") })),
+        { ordered: false }
+      );
+      found = found.concat(created);
+    }
+  }
+  return ids.concat(found.map(f => String(f._id)));
+}
+
+/* =============== UPLOAD =============== */
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(process.cwd(), "uploads", "posts");
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const base = path.basename(file.originalname, ext).replace(/\s+/g, "-").toLowerCase();
+    cb(null, `${Date.now()}-${base}${ext}`);
+  },
+});
+const upload = multer({ storage });
+
+/* =============== CREATE =============== */
+router.post("/", auth, upload.single("image"), async (req, res) => {
   try {
-    const { title, content, tags } = req.body || {};
-    
-    // ✅ DÜZELTME #3: Güçlendirilmiş input validasyonu
-    const trimmedTitle = String(title || "").trim();
-    const trimmedContent = String(content || "").trim();
-    
-    if (!trimmedTitle || trimmedTitle.length < 5) {
-      return res.status(400).json({ message: "title en az 5 karakter olmalı" });
-    }
-    if (!trimmedContent || trimmedContent.length < 10) {
-      return res.status(400).json({ message: "content en az 10 karakter olmalı" });
-    }
+    const { title, content } = req.body;
+    const categoryIds = await resolveIds(Category, req.body["categories[]"] ?? req.body.categories);
+    const tagIds = await resolveIds(Tag, req.body["tags[]"] ?? req.body.tags);
+    const base = `${req.protocol}://${req.get("host")}`;
+    const imageUrl = req.file ? `${base}/uploads/posts/${req.file.filename}` : null;
 
     const post = await Post.create({
-      title: trimmedTitle,
-      content: trimmedContent,
-      tags: Array.isArray(tags) ? tags : [],
+      title,
+      content,
+      tags: tagIds,
+      categories: categoryIds,
+      imageUrl,
       author: req.userId,
     });
 
-    return res.status(201).json(post);
-  } catch (err) {
-    console.error("POST /posts hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
+    res.status(201).json(post);
+  } catch (e) {
+    console.error("POST /posts hata:", e);
+    res.status(400).json({ message: "Kaydedilemedi", detail: e.message });
   }
 });
 
-/**
- * GET /posts  -> Listeleme + Arama/Filtre/Sıralama/Sayfalama
- * Query:
- *  - search (title/content'te)
- *  - author (yazar id)
- *  - tags (virgülü: tag1,tag2)
- *  - sort (default: -createdAt, accepts: -likes)
- *  - page, limit (default: 1, 10)
- */
-// ✅ DÜZELTME #2: Tekrarlanan GET endpoint'i AYNI FONKSİYON İÇİNDE BİRLEŞTİRİLDİ
+/* =============== UPDATE =============== */
+router.put("/:id", auth, upload.single("image"), async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const data = { title, content };
+
+    if ("tags" in req.body || "tags[]" in req.body)
+      data.tags = await resolveIds(Tag, req.body["tags[]"] ?? req.body.tags);
+    if ("categories" in req.body || "categories[]" in req.body)
+      data.categories = await resolveIds(Category, req.body["categories[]"] ?? req.body.categories);
+
+    if (req.file) {
+      const base = `${req.protocol}://${req.get("host")}`;
+      data.imageUrl = `${base}/uploads/posts/${req.file.filename}`;
+    }
+
+    const post = await Post.findByIdAndUpdate(req.params.id, data, { new: true });
+    res.json(post);
+  } catch (e) {
+    console.error("PUT /posts/:id hata:", e);
+    res.status(400).json({ message: "Güncellenemedi", detail: e.message });
+  }
+});
+
+/* =============== LISTE / FILTRE =============== */
+async function toObjectIdsOrNames(Model, incoming) {
+  const arr = toArray(incoming);
+  if (!arr.length) return [];
+  const ids = arr.filter(x => mongoose.Types.ObjectId.isValid(String(x)));
+  const names = arr.filter(x => !mongoose.Types.ObjectId.isValid(String(x)));
+  if (!names.length) return ids;
+  const docs = await Model.find({
+    $or: [{ name: { $in: names } }, { slug: { $in: names.map(n => n.toLowerCase()) } }],
+  }).select("_id");
+  return ids.concat(docs.map(d => String(d._id)));
+}
+
 router.get("/", async (req, res) => {
   try {
-    const {
-      search = "",
-      author,
-      tags,
-      sort = "-createdAt",
-      page = 1,
-      limit = 10,
-    } = req.query;
+    const { search = "", author, tags, categories, sort: rawSort, page = 1, limit = 10 } = req.query;
 
-    // ---- Sorgu objesi oluştur
-    const q = {};
+    const filter = {};
     if (search) {
-      const searchRegex = String(search).trim();
-      q.$or = [
-        { title: { $regex: searchRegex, $options: "i" } },
-        { content: { $regex: searchRegex, $options: "i" } },
-      ];
+      const regex = new RegExp(String(search).trim(), "i");
+      filter.$or = [{ title: regex }, { content: regex }];
     }
-    if (author) q.author = author;
-    if (tags) {
-      const arr = String(tags).split(",").map(s => s.trim()).filter(Boolean);
-      if (arr.length) q.tags = { $in: arr };
-    }
+    if (author) filter.author = author;
 
-    const _limit = Math.max(parseInt(limit, 10) || 10, 1);
-    const _page = Math.max(parseInt(page, 10) || 1, 1);
+    const catIds = await toObjectIdsOrNames(Category, categories);
+    if (catIds.length) filter.categories = { $in: catIds };
+    const tagIds = await toObjectIdsOrNames(Tag, tags);
+    if (tagIds.length) filter.tags = { $in: tagIds };
+
+    const sortObj =
+      rawSort === "popular"
+        ? { views: -1 }
+        : rawSort
+        ? { [rawSort.replace("-", "")]: rawSort.startsWith("-") ? -1 : 1 }
+        : { createdAt: -1 };
+
+    const _limit = Math.max(parseInt(limit) || 10, 1);
+    const _page = Math.max(parseInt(page) || 1, 1);
     const skip = (_page - 1) * _limit;
 
-    const total = await Post.countDocuments(q);
+    const total = await Post.countDocuments(filter);
+    const items = await Post.find(filter)
+      .populate("author categories tags")
+      .sort(sortObj)
+      .skip(skip)
+      .limit(_limit);
 
-    // ---- Likes'a göre sıralama isteniyor mu?
-    const wantsLikeSort = /(^|,)\s*-?likes(count)?\s*(,|$)/i.test(sort);
-
-    if (!wantsLikeSort) {
-      // Normal sıralama (populate ile)
-      const items = await Post.find(q)
-        .sort(sort)
-        .skip(skip)
-        .limit(_limit)
-        .populate("author", "username email");
-
-      return res.json({
-        items,
-        total,
-        page: _page,
-        limit: _limit,
-        pages: Math.ceil(total / _limit),
-      });
-    }
-
-    // ---- Likes'a göre sıralama (aggregation pipeline)
-    const sortObj = {};
-    String(sort)
-      .split(",")
-      .map(s => s.trim())
-      .filter(Boolean)
-      .forEach(key => {
-        const dir = key.startsWith("-") ? -1 : 1;
-        const k = key.replace(/^-/, "");
-        if (/^likes(count)?$/i.test(k)) {
-          sortObj["likesCount"] = dir;
-        } else {
-          sortObj[k] = dir;
-        }
-      });
-
-    const items = await Post.aggregate([
-      { $match: q },
-      { $addFields: { likesCount: { $size: { $ifNull: ["$likes", []] } } } },
-      {
-        $lookup: {
-          from: "users",
-          localField: "author",
-          foreignField: "_id",
-          as: "author",
-        },
-      },
-      { $unwind: "$author" },
-      {
-        $project: {
-          title: 1,
-          content: 1,
-          tags: 1,
-          comments: 1,
-          likes: 1,
-          likesCount: 1,
-          createdAt: 1,
-          updatedAt: 1,
-          author: {
-            _id: "$author._id",
-            username: "$author.username",
-            email: "$author.email",
-          },
-        },
-      },
-      { $sort: sortObj },
-      { $skip: skip },
-      { $limit: _limit },
-    ]);
-
-    return res.json({
-      items,
-      total,
-      page: _page,
-      limit: _limit,
-      pages: Math.ceil(total / _limit),
-    });
+    res.json({ items, total, page: _page, limit: _limit, pages: Math.ceil(total / _limit) });
   } catch (err) {
     console.error("GET /posts hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
+    res.status(500).json({ message: "Sunucu hatası", detail: err.message });
   }
 });
 
-/**
- * GET /posts/:id  -> Tek post
- */
+/* =============== TEK KAYIT =============== */
 router.get("/:id", async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id)
-      .populate("author", "username email")
-      .populate({
-        path: "comments",
-        populate: { path: "author", select: "username email" },
-      });
-
+    const post = await Post.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { views: 1 } },
+      { new: true }
+    ).populate("author categories tags");
     if (!post) return res.status(404).json({ message: "Post bulunamadı" });
-    return res.json(post);
+    res.json(post);
   } catch (err) {
     console.error("GET /posts/:id hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
+    res.status(500).json({ message: "Sunucu hatası" });
   }
 });
 
-/**
- * PATCH /posts/:id  -> Güncelle (sadece sahibi)
- * Body: { title?, content?, tags? }
- */
-router.patch("/:id", auth, async (req, res) => {
-  try {
-    const post = await Post.findOne({ _id: req.params.id, author: req.userId });
-    if (!post) {
-      return res.status(403).json({ message: "Bu postu güncelleme yetkiniz yok" });
-    }
-
-    const { title, content, tags } = req.body || {};
-    
-    // ✅ Güncelleme sırasında da validasyon
-    if (title !== undefined) {
-      const trimmedTitle = String(title).trim();
-      if (trimmedTitle.length < 5) {
-        return res.status(400).json({ message: "title en az 5 karakter olmalı" });
-      }
-      post.title = trimmedTitle;
-    }
-    
-    if (content !== undefined) {
-      const trimmedContent = String(content).trim();
-      if (trimmedContent.length < 10) {
-        return res.status(400).json({ message: "content en az 10 karakter olmalı" });
-      }
-      post.content = trimmedContent;
-    }
-    
-    if (tags !== undefined) {
-      post.tags = Array.isArray(tags) ? tags : post.tags;
-    }
-
-    await post.save();
-    return res.json(post);
-  } catch (err) {
-    console.error("PATCH /posts/:id hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
-  }
-});
-
-/**
- * DELETE /posts/:id  -> Sil (sadece sahibi)
- */
+/* =============== DELETE / LIKE / SIMILAR =============== */
 router.delete("/:id", auth, async (req, res) => {
   try {
-    const post = await Post.findOneAndDelete({
-      _id: req.params.id,
-      author: req.userId,
-    });
-    if (!post) {
-      return res.status(403).json({ message: "Bu postu silme yetkiniz yok" });
-    }
-
-    // Post silinirken bağlı yorumları da sil (Cascade delete)
+    const post = await Post.findOneAndDelete({ _id: req.params.id, author: req.userId });
+    if (!post) return res.status(403).json({ message: "Bu postu silme yetkiniz yok" });
     await Comment.deleteMany({ post: post._id });
-
-    return res.json({ status: "ok" });
+    res.json({ status: "ok" });
   } catch (err) {
     console.error("DELETE /posts/:id hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
+    res.status(500).json({ message: "Sunucu hatası" });
   }
 });
 
-/**
- * POST /posts/:id/like  -> Like/Unlike toggle (auth gerekli)
- */
 router.post("/:id/like", auth, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post bulunamadı" });
-
     const idx = post.likes.findIndex(u => String(u) === String(req.userId));
-    if (idx === -1) {
-      post.likes.push(req.userId);
-    } else {
-      post.likes.splice(idx, 1);
-    }
-
+    if (idx === -1) post.likes.push(req.userId);
+    else post.likes.splice(idx, 1);
     await post.save();
-    return res.json({ likes: post.likes.length, liked: idx === -1 });
+    res.json({ likes: post.likes.length, liked: idx === -1 });
   } catch (err) {
     console.error("POST /posts/:id/like hata:", err);
-    return res.status(500).json({ message: "Sunucu hatası" });
+    res.status(500).json({ message: "Sunucu hatası" });
+  }
+});
+
+router.get("/:id/similar", async (req, res) => {
+  try {
+    const base = await Post.findById(req.params.id).select("categories tags");
+    if (!base) return res.status(404).json({ message: "Post bulunamadı" });
+    const items = await Post.find({
+      _id: { $ne: base._id },
+      $or: [{ categories: { $in: base.categories } }, { tags: { $in: base.tags } }],
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select("title author createdAt")
+      .populate("author", "username");
+    res.json(items);
+  } catch (e) {
+    console.error("GET /posts/:id/similar hata:", e);
+    res.status(500).json({ message: "Sunucu hatası" });
   }
 });
 

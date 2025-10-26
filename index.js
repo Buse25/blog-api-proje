@@ -10,9 +10,7 @@ connectDB();
 
 // ============ CORS AYARLARI ============
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'http://localhost:3001',
-  'http://localhost:3001',
-  'http://localhost:3000',
+  process.env.CLIENT_URL ||  'http://localhost:3000',
 ];
 
 const corsOptions = {
@@ -40,16 +38,43 @@ app.get("/", (req, res) => {
 });
 
 // ============ ROUTES ============
-const authRoutes = require("./routes/auth");
-const userRoutes = require("./routes/user");
-const postRoutes = require("./routes/post");
-const commentRoutes = require("./routes/comment");
+// const authRoutes = require("./routes/auth");
+// const userRoutes = require("./routes/user");
+// const postRoutes = require("./routes/post");
+// const commentRoutes = require("./routes/comment");
+// const categoryRoutes = require("./routes/category");
+// const tagRoutes = require("./routes/tag");
 
-app.use("/auth", authRoutes);
-app.use("/user", userRoutes);
+
+// app.use("/categories", categoryRoutes); // FE: /categories
+// app.use("/users", userRoutes);          // FE: /users
+
+// app.use("/categories", categoryRoutes);
+// app.use("/tags", tagRoutes);
+
+
+
+// app.use("/auth", authRoutes);
+// // app.use("/user", userRoutes);
+// // app.use("/posts", postRoutes);
+// app.use("/posts/:id/comments", commentRoutes);
+// app.use("/user", require("./routes/user"));
+// app.use("/posts", require("./routes/post"));
+// --- ROUTES: her biri sadece 1 kez tanımlansın ---
+const authRoutes     = require("./routes/auth");       // varsa
+const postRoutes     = require("./routes/post");
+const categoryRoutes = require("./routes/category");
+const tagRoutes      = require("./routes/tag");        // varsa
+const userRoutes     = require("./routes/user");
+const commentRoutes  = require("./routes/comment");    // varsa
+
+// --- MOUNT: her biri sadece 1 kez kullanılsın ---
+app.use("/auth", authRoutes);          // /auth/login, /auth/register vs. (varsa)
 app.use("/posts", postRoutes);
-app.use("/posts/:id/comments", commentRoutes);
-app.use("/user", require("./routes/user"));
+app.use("/categories", categoryRoutes);
+app.use("/tags", tagRoutes);           // varsa
+app.use("/users", userRoutes);
+app.use("/comments", commentRoutes);   // varsa
 
 
 
@@ -69,7 +94,7 @@ app.use((err, req, res, next) => {
 });
 
 // ============ SERVER ============
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server çalışıyor: http://localhost:${PORT}`);
 });

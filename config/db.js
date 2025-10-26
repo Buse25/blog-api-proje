@@ -10,7 +10,7 @@ module.exports = async function connectDB() {
   try {
     mongoose.set("strictQuery", true);
     await mongoose.connect(uri, { dbName: process.env.MONGO_DBNAME || undefined });
-    console.log("✅ MongoDB bağlantısı başarılı");
+    console.log("MongoDB bağlantısı başarılı****");
   } catch (err) {
     console.error("❌ MongoDB bağlantı hatası:", err.message);
     process.exit(1);

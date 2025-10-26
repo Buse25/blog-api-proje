@@ -1,19 +1,29 @@
 // models/Post.js
 const mongoose = require("mongoose");
+const { Schema } = mongoose;
 
-const postSchema = new mongoose.Schema(
+const PostSchema = new Schema(
   {
-    title: { type: String, required: true, trim: true, index: true },
-    content: { type: String, required: true },
-    author: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-    tags: { type: [String], default: [], index: true },
-    likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    comments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Comment" }],
+    title:     { type: String, required: true, trim: true, index: true },
+    content:   { type: String, required: true },
+    author:    { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+
+    // KATEGORİ & TAG -> referans
+    categories:{ type: [Schema.Types.ObjectId], ref: "Category", default: [], index: true },
+    tags:      { type: [Schema.Types.ObjectId], ref: "Tag",       default: [], index: true },
+
+    // BEĞENİ -> kullanıcı id listesi; sayı = likes.length
+    likes:     [{ type: Schema.Types.ObjectId, ref: "User" }],
+
+    comments:  [{ type: Schema.Types.ObjectId, ref: "Comment" }],
+    views:     { type: Number, default: 0 },
+
+    imageUrl:  { type: String, default: null },
   },
   { timestamps: true }
 );
 
-// Arama için temel text index
-postSchema.index({ title: "text", content: "text" });
+// Arama için
+PostSchema.index({ title: "text", content: "text" });
 
-module.exports = mongoose.model("Post", postSchema);
+module.exports = mongoose.model("Post", PostSchema);
